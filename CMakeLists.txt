@@ -15,7 +15,7 @@ project(
 
 
 # project options
-option(MKPDEMO_BUILD_ALL "Build everything" OFF)
+option(MKPDEMO_BUILD_ALL "Build everything" ON)
 
 
 # do not allow building in-source
@@ -29,7 +29,12 @@ include(cmake/CPM.cmake)
 CPMAddPackage(
     NAME mkpoker
     GITHUB_REPOSITORY MichaelUnknown/mkpoker
-    GIT_TAG 61e958ffba5919faef2202d85b6afd216c56c0fe
+    GIT_TAG c476b2a9c4a2d446265444fc7321b33aef757c47
+)
+CPMAddPackage(
+    NAME fmtlib
+    GITHUB_REPOSITORY fmtlib/fmt
+    GIT_TAG 7.1.3
 )
 
 
@@ -39,16 +44,3 @@ if(MKPDEMO_BUILD_ALL)
     add_subdirectory(example)
 endif()
 
-
-# make installable target
-#string(TOLOWER ${PROJECT_NAME}/version.h VERSION_HEADER_LOCATION)
-#packageProject(
-#    NAME ${PROJECT_NAME}
-#    VERSION ${PROJECT_VERSION}
-#    NAMESPACE ${PROJECT_NAMESPACE}
-#    BINARY_DIR ${PROJECT_BINARY_DIR}
-#    INCLUDE_DIR ${PROJECT_SOURCE_DIR}/include
-#    INCLUDE_DESTINATION include/${PROJECT_NAME}-${PROJECT_VERSION}
-#    VERSION_HEADER "${VERSION_HEADER_LOCATION}"
-#    DEPENDENCIES ""
-#)

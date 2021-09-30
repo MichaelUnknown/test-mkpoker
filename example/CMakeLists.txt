@@ -11,3 +11,8 @@ target_link_libraries(demo_equity PRIVATE mkpoker::mkpoker)
 add_executable(demo_handstrength demo_handstrength.cpp)
 target_link_libraries(demo_handstrength PRIVATE mkpoker::mkpoker)
 
+add_executable(demo_besthand demo_besthand.cpp)
+target_link_libraries(demo_besthand PRIVATE mkpoker::mkpoker fmt::fmt)
+
+add_executable(demo_simulation demo_simulation.cpp)
+target_link_libraries(demo_simulation PRIVATE mkpoker::mkpoker fmt::fmt)
