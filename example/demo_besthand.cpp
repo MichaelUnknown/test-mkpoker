@@ -21,11 +21,18 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <mkpoker/base/cardset.hpp>
 #include <mkpoker/base/hand.hpp>
+#include <mkpoker/base/range.hpp>
 #include <mkpoker/holdem/holdem_evaluation.hpp>
 
-#include <algorithm>
-#include <set>
-#include <vector>
+#include <algorithm>    // sort, find_if
+#include <atomic>       //
+#include <chrono>       // ms
+#include <mutex>        //
+#include <numeric>      // accumulate / reduce
+#include <set>          //
+#include <string>       //
+#include <thread>       // thread, sleep_for
+#include <vector>       //
 
 #include <fmt/core.h>
 #include <fmt/format.h>
@@ -37,12 +44,13 @@ struct stats_t
     uint16_t m_ranking;
 };
 
-struct hand_with_info_t
+struct hand_with_stats_t
 {
-    mkp::hand_2c m_hand;
-    uint16_t m_id;
+    uint64_t m_sum;
     std::vector<stats_t> m_stats;
+    uint16_t m_id;
 };
+
 struct stats_with_id_t
 {
     uint16_t m_id;
@@ -348,114 +356,276 @@ int main()
         // iterate over all flops
         // calculate the strength of all hands that are legal
         // infos that we wanto to store:
-        // - 1326 hands with name, id
-        // - for each hand, the 19600 (50 choose 3) results, that ist
+        // - 1326 (52 chosse 2) hands with name, id
+        // - for each hand, the 19600 (50 choose 3) results, that is
         //   - score (absolute)
         //   - ranking (shared rankings will give better number, e.g., 1,2,2,2,5,6 for 3 times shared 2nd place)
         //   1326 and 19600 fit into 16 bits (uint16_t)
         // - merge results according to suit isomorphism (AcAd === AcAs etc.)
         // - total of ~52m data points
         //
-        // - in each inner iteration, we 1176 (compute 49 choose 2) results
+        // - in each inner iteration, we get 1176 (compute 49 choose 2) results
 
-        std::vector<hand_with_info_t> all_hands{};
+        std::vector<mkp::hand_2c> hands_index{};
+        std::vector<hand_with_stats_t> all_hands{};
+        hands_index.reserve(1326);
         all_hands.reserve(1326);
-        uint16_t counter = 0;
-        // prep loop: store all hands with an id
-        for (uint8_t v = 0; v < 52; ++v)
+        std::vector<std::vector<stats_with_id_t>> all_results;
+        std::mutex mu;
+
         {
-            for (uint8_t w = v + 1; w < 52; ++w)
+            // prep loop: store all hands with an id
+            uint16_t counter = 0;
+            for (uint8_t v = 0; v < 52; ++v)
             {
-                const mkp::hand_2c hand{v, w};
-                all_hands.push_back(hand_with_info_t{hand, counter, {}});
-                //fmt::print("hand: {}, id: {}, stats stored: {}\n\n", all_hands.at(counter).m_hand.str(), all_hands.at(counter).m_id,
-                //           fmt::join(all_hands.at(counter).m_stats, "\n"));
-                ++counter;
+                for (uint8_t w = v + 1; w < 52; ++w)
+                {
+                    const mkp::hand_2c hand{v, w};
+                    hands_index.push_back(hand);
+                    all_hands.push_back(hand_with_stats_t{0, {}, counter});
+                    ++counter;
+                }
             }
         }
 
+        const auto t1 = std::chrono::high_resolution_clock::now();
+
+        const auto c_threads_max = std::thread::hardware_concurrency();
+        std::vector<std::atomic<bool>> threads_running(c_threads_max);
+
         // outer loop: flops
-        for (int i = 0; i < 1; ++i)
+        fmt::print("\nstarting evaluation of flops...\n");
+        for (int i = 0; i < 52; ++i)
         {
-            for (int j = i + 1; j < 2; ++j)
+            for (int j = i + 1; j < 52; ++j)
             {
-                for (int k = j + 1; k < 52; ++k)
+                //for (int k = j + 1; k < 52; ++k)
                 {
                     // inner loop: hands
-
-                    const mkp::cardset flop{mkp::make_bitset(i, j, k)};
-                    std::vector<stats_with_id_t> results;
-                    results.reserve(1176);
-
-                    for (const auto& hand : all_hands)
-                    {
-                        if (const auto hand_as_cs = hand.m_hand.as_cardset(); flop.disjoint(hand_as_cs))
+                    //auto fn = [&, i, j](int z)
+                    auto fn = [=, &threads_running, &all_results, &mu](int z) {
+                        //fmt::print("thread {} started\n", z);
+                        for (int k = j + 1; k < 52; ++k)
                         {
-                            //fmt::print("evaluating {} -> ", flop.combine(hand_as_cs).str());
-                            //fmt::print("result: {}\n", mkp::evaluate_safe(flop.combine(hand_as_cs)).str());
-                            results.push_back(stats_with_id_t{hand.m_id, 0, mkp::evaluate_safe(flop.combine(hand_as_cs))});
+                            const mkp::cardset flop{mkp::make_bitset(i, j, k)};
+                            std::vector<stats_with_id_t> results;
+                            results.reserve(1176);
+
+                            for (const auto& hand : all_hands)
+                            {
+                                if (const auto hand_as_cs = hands_index.at(hand.m_id).as_cardset(); flop.disjoint(hand_as_cs))
+                                {
+                                    results.push_back(stats_with_id_t{hand.m_id, 0, mkp::evaluate_safe(flop.combine(hand_as_cs))});
+                                }
+                            }
+
+                            // fmt::print("results before sorting:\n{}\n\n", fmt::join(results, "\n"));
+                            // sort the results reverse (highest hand first)
+                            std::sort(results.begin(), results.end(),
+                                      [](const auto& lhs, const auto& rhs) { return lhs.m_score > rhs.m_score; });
+
+                            // fmt::print("results after sorting / before ranking algo:\n{}\n\n", fmt::join(results, "\n"));
+                            // algo to calculate ranking
+                            int counter_rank_current = 1;
+                            int counter = 1;
+                            mkp::holdem_result last_score = results.front().m_score;
+                            for (auto& res : results)
+                            {
+                                if (res.m_score != last_score)
+                                {
+                                    counter_rank_current = counter;
+                                    last_score = res.m_score;
+                                }
+                                res.m_ranking = counter_rank_current;
+                                ++counter;
+                            }
+                            // fmt::print("results after ranking algo:\n{}\n\n", fmt::join(results, "\n"));
+
+                            // update the collection
+                            {
+                                std::lock_guard<std::mutex> guard(mu);
+                                all_results.push_back(results);
+                            }
                         }
-                    }
+                        //fmt::print("thread {} ended\n", z);
+                        threads_running[z] = false;
+                    };
 
-                    // fmt::print("results before sorting:\n{}\n\n", fmt::join(results, "\n"));
-                    // sort the results reverse (highest hand first)
-                    std::sort(results.begin(), results.end(), [](const auto lhs, const auto rhs) { return lhs.m_score > rhs.m_score; });
-
-                    // fmt::print("results after sorting / before ranking algo:\n{}\n\n", fmt::join(results, "\n"));
-                    // algo to calculate ranking
-                    int counter_rank_current = 1;
-                    int counter = 1;
-                    mkp::holdem_result last_score = results.front().m_score;
-                    for (auto& res : results)
+                    for (;;)
                     {
-                        if (res.m_score != last_score)
+                        bool thread_spawned = false;
+                        for (int z = 0; z < threads_running.size(); ++z)
                         {
-                            counter_rank_current = counter;
-                            last_score = res.m_score;
+                            if (!threads_running[z])
+                            {
+                                threads_running[z] = true;
+                                std::thread t(fn, z);
+                                t.detach();
+                                thread_spawned = true;
+                                break;
+                            }
                         }
-                        res.m_ranking = counter_rank_current;
-                        ++counter;
-                    }
-                    // fmt::print("results after ranking algo:\n{}\n\n", fmt::join(results, "\n"));
-
-                    // update our collection
-                    for (const auto& result : results)
-                    {
-                        const auto it =
-                            std::find_if(all_hands.begin(), all_hands.end(), [&](const auto hand) { return hand.m_id == result.m_id; });
-                        if (it != all_hands.end())
+                        if (thread_spawned)
                         {
-                            it->m_stats.push_back({result.m_score, result.m_ranking});
+                            break;
+                        }
+                        else
+                        {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(1));
                         }
                     }
                 }
             }
         }
 
-        // print some results
-        for (const auto& hand : all_hands)
+        auto finish_threads = [&]() {
+            fmt::print("waiting for threads to finish...\n\n");
+            bool still_running = false;
+            for (;;)
+            {
+                for (int z = 0; z < threads_running.size(); ++z)
+                {
+                    if (threads_running[z])
+                    {
+                        still_running = true;
+                        break;
+                    }
+                }
+
+                if (!still_running)
+                {
+                    break;
+                }
+                else
+                {
+                    still_running = false;
+                }
+            }
+        };
+        // wait for all threads to finish
+        finish_threads();
+
+        const auto t2 = std::chrono::high_resolution_clock::now();
+        const std::chrono::duration<double, std::milli> duration = t2 - t1;
+        fmt::print("duration for evaluating {} hands: {} ms\n", all_results.size() * all_results.front().size(), duration.count());
+
+        // merge all_results
+        std::vector<stats_with_id_t> all_results_flat;
+        all_results_flat.reserve(22100 * 1176);    // (52 choose 3) * (49 choose 2)
+        for (auto& results : all_results)
         {
-            //fmt::print("hand: {}\n", hand.m_hand.str());
-            //fmt::print("hand: {}, id: {}\n", hand.m_hand.str(), hand.m_id);
-            //if (hand.m_stats.size() > 0)
-            //{
-            //    auto test = hand.m_stats;
-            //    fmt::print("stats: {}\n", fmt::join(hand.m_stats, "\n"));
-            //}
-            fmt::print("hand: {}, id: {}, stats stored:\n{}\n\n", hand.m_hand.str(), hand.m_id, fmt::join(hand.m_stats, "\n"));
+            all_results_flat.insert(all_results_flat.end(), std::make_move_iterator(results.begin()),
+                                    std::make_move_iterator(results.end()));
+        }
+        all_results.clear();
+
+        // sort
+        const auto sort_t1 = std::chrono::high_resolution_clock::now();
+        std::sort(all_results_flat.begin(), all_results_flat.end(), [](const auto& lhs, const auto& rhs) { return lhs.m_id < rhs.m_id; });
+        const auto sort_t2 = std::chrono::high_resolution_clock::now();
+        const std::chrono::duration<double, std::milli> duration_sort = sort_t2 - sort_t1;
+        fmt::print("duration for sorting {} hands: {} ms\n", all_results_flat.size(), duration_sort.count());
+
+        fmt::print("\nstarting recombination of data...\n");
+        const auto combine_t1 = std::chrono::high_resolution_clock::now();
+        // start threads for combining data
+        {
+            for (auto& hand : all_hands)
+            {
+                auto fn = [&](int z) {
+                    //fmt::print("thread {} started\n", z);
+                    hand.m_stats.reserve(19600);
+                    auto it = std::find_if(all_results_flat.cbegin(), all_results_flat.cend(),
+                                           [&](const auto& st) { return hand.m_id == st.m_id; });
+                    while (it != all_results_flat.end() && it->m_id == hand.m_id)
+                    {
+                        hand.m_stats.emplace_back(it->m_score, it->m_ranking);
+                        //it = std::next(it);
+                        ++it;
+                    }
+                    //fmt::print("thread {} ended\n", z);
+                    threads_running[z] = false;
+                };
+
+                for (;;)
+                {
+                    bool thread_spawned = false;
+                    for (int z = 0; z < threads_running.size(); ++z)
+                    {
+                        if (!threads_running[z])
+                        {
+                            threads_running[z] = true;
+                            std::thread t(fn, z);
+                            t.detach();
+                            thread_spawned = true;
+                            break;
+                        }
+                    }
+                    if (thread_spawned)
+                    {
+                        break;
+                    }
+                    else
+                    {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    }
+                }
+            }
+        }
+        // wait for all threads to finish
+        finish_threads();
+        all_results_flat.clear();
+
+        const auto combine_t2 = std::chrono::high_resolution_clock::now();
+        const std::chrono::duration<double, std::milli> duration_combine = combine_t2 - combine_t1;
+        fmt::print("duration for combining {} hands: {} ms\n", all_results_flat.size(), duration_combine.count());
+
+        for (auto& hand : all_hands)
+        {
+            auto add_stats = [](const uint64_t& x, const stats_t& st) { return x + st.m_ranking; };
+            hand.m_sum = std::reduce(hand.m_stats.cbegin(), hand.m_stats.cend(), uint64_t(0), add_stats);
+        }
+        std::sort(all_hands.begin(), all_hands.end(), [](const auto& lhs, const auto& rhs) { return lhs.m_sum < rhs.m_sum; });
+
+        fmt::print("\nRanking after flop:\n");
+        {
+            int counter = 1;
+            for (auto& hand : all_hands)
+            {
+                fmt::print("#{:>4}: {}/{:>4} with score {:>8} (average: {:>4})\n", counter, hands_index.at(hand.m_id).str(), hand.m_id,
+                           hand.m_sum, hand.m_sum / hand.m_stats.size());
+                ++counter;
+            }
+        }
+
+        std::set<uint8_t> stored_starting_hands;
+        for (auto it = all_hands.begin(); it != all_hands.end();)
+        {
+            const auto index = mkp::range::index(hands_index.at(it->m_id));
+            if (stored_starting_hands.contains(index))
+            {
+                it = all_hands.erase(it);
+            }
+            else
+            {
+                stored_starting_hands.insert(index);
+                ++it;
+            }
+        }
+
+        fmt::print("\nRanking after suit isomorphism:\n");
+        {
+            int counter = 1;
+            for (auto& hand : all_hands)
+            {
+                fmt::print("#{:>4}: {}/{:>4} with score {:>8} (average: {:>4})\n", counter, hands_index.at(hand.m_id).str(), hand.m_id,
+                           hand.m_sum, hand.m_sum / hand.m_stats.size());
+                ++counter;
+            }
         }
 
         // todo:
-
-        // print sizes to check
-
-        // average ranks
-        // print results
-
         // merge according to suit isomorphism
         // print results
     }
-    // todo:
-    // - compute rankings the traditional way
-    // - compute rankings with generators for hands and river
 }
