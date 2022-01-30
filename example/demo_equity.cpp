@@ -35,8 +35,17 @@ int main()
     mkp::card_generator cgen{std::random_device{}()};
 
     const auto cards = cgen.generate_v(9);
+    //std::vector<mkp::card> cards = {mkp::card{"Jc"}, mkp::card{"9c"}, mkp::card{"9d"}, mkp::card{"5s"}, mkp::card{"Tc"},
+    //                                mkp::card{"Jd"}, mkp::card{"7s"}, mkp::card{"4s"}, mkp::card{"Jh"}};
     const auto h1 = mkp::hand_2c(cards[0], cards[1]);
     const auto h2 = mkp::hand_2c(cards[2], cards[3]);
+    const auto cards_preflop = mkp::cardset(std::span<const mkp::card>(cards.data(), 4));
+    const auto cards_flop = mkp::cardset(std::span<const mkp::card>(cards.data(), 7));
+    const auto cards_turn = mkp::cardset(std::span<const mkp::card>(cards.data(), 8));
+    const auto cards_river = mkp::cardset(std::span<const mkp::card>(cards.data(), 9));
+    int wins1 = 0;
+    int wins2 = 0;
+    int draws = 0;
 
     // print hands
     std::cout << "randomly generated game:\nhand 1: " << h1.str() << "\nhand 2: " << h2.str() << "\n";
@@ -46,14 +55,34 @@ int main()
     std::array<int, 2> wins_preflop{0, 0};
     for (uint8_t i = 0; i < mkp::c_deck_size; ++i)
     {
+        if (auto card = mkp::card(i); cards_preflop.contains(card))
+        {
+            continue;
+        }
         for (uint8_t j = i + 1; j < mkp::c_deck_size; ++j)
         {
+            if (auto card = mkp::card(j); cards_preflop.contains(card))
+            {
+                continue;
+            }
             for (uint8_t k = j + 1; k < mkp::c_deck_size; ++k)
             {
+                if (auto card = mkp::card(k); cards_preflop.contains(card))
+                {
+                    continue;
+                }
                 for (uint8_t l = k + 1; l < mkp::c_deck_size; ++l)
                 {
+                    if (auto card = mkp::card(l); cards_preflop.contains(card))
+                    {
+                        continue;
+                    }
                     for (uint8_t m = l + 1; m < mkp::c_deck_size; ++m)
                     {
+                        if (auto card = mkp::card(m); cards_preflop.contains(card))
+                        {
+                            continue;
+                        }
                         const mkp::cardset board{mkp::make_bitset(i, j, k, l, m)};
                         const auto e1 = mkp::evaluate_safe(h1.as_cardset(), board);
                         const auto e2 = mkp::evaluate_safe(h2.as_cardset(), board);
@@ -62,16 +91,19 @@ int main()
                         {
                             wins_preflop[0] += 1;
                             wins_preflop[1] += 1;
+                            ++draws;
                         }
                         else
                         {
                             if (cmp > 0)
                             {
                                 wins_preflop[0] += 2;
+                                ++wins1;
                             }
                             else
                             {
                                 wins_preflop[1] += 2;
+                                ++wins2;
                             }
                         }
                     }

@@ -14,5 +14,8 @@ target_link_libraries(demo_handstrength PRIVATE mkpoker::mkpoker)
 add_executable(demo_besthand demo_besthand.cpp)
 target_link_libraries(demo_besthand PRIVATE mkpoker::mkpoker fmt::fmt)
 
+add_executable(demo_besthand_river demo_besthand_river.cpp)
+target_link_libraries(demo_besthand_river PRIVATE mkpoker::mkpoker fmt::fmt sqlite-cpm::sqlite-cpm)
+
 add_executable(demo_simulation demo_simulation.cpp)
-target_link_libraries(demo_simulation PRIVATE mkpoker::mkpoker fmt::fmt)
+target_link_libraries(demo_simulation PRIVATE mkpoker::mkpoker fmt::fmt sqlite-cpm::sqlite-cpm)

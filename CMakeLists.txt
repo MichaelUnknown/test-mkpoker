@@ -26,16 +26,9 @@ endif()
 
 # dependencies
 include(cmake/CPM.cmake)
-CPMAddPackage(
-    NAME mkpoker
-    GITHUB_REPOSITORY MichaelUnknown/mkpoker
-    GIT_TAG c476b2a9c4a2d446265444fc7321b33aef757c47
-)
-CPMAddPackage(
-    NAME fmtlib
-    GITHUB_REPOSITORY fmtlib/fmt
-    GIT_TAG 7.1.3
-)
+CPMAddPackage("gh:MichaelUnknown/mkpoker#dc0839624f30bdd6e72a3b92b77f70cd564fbef1")
+CPMAddPackage("gh:fmtlib/fmt#7.1.3")
+CPMAddPackage("gh:MichaelUnknown/sqlite-cpm@0.1.0")
 
 
 # configure according to options
